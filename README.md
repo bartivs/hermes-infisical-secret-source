@@ -13,8 +13,8 @@ and other environment variables from an Infisical project at Hermes startup.
 
 ## Why use this integration?
 
-Hermes Agent normally reads provider credentials from `~/.hermes/.env`. This
-plugin replaces a large collection of local secrets with one scoped Infisical
+Hermes Agent normally reads provider credentials from its local dotenv
+configuration. This plugin replaces a large collection of local secrets with one scoped Infisical
 machine-identity token. Secrets remain centrally managed, auditable, and easy
 to rotate.
 
@@ -23,7 +23,7 @@ to rotate.
 - Infisical Cloud and self-hosted Infisical support
 - Read-only bulk export from a selected project, environment, and folder
 - Machine identity authentication using the official Infisical CLI
-- Optional root-only token file, avoiding a token in `~/.hermes/.env`
+- Optional root-only token file, avoiding a token in the local dotenv configuration
 - Hermes-native precedence, provenance labels, protected bootstrap token, and
   startup timeout handling
 - No secret values in plugin logs, exceptions, or Git configuration
@@ -63,10 +63,10 @@ hermes plugins install bartivs/hermes-infisical-secret-source \
 
 ### 3. Configure the source
 
-The simplest setup keeps the machine token in Hermes' protected `.env`:
+The simplest setup keeps the machine token in Hermes' protected dotenv configuration:
 
 ```yaml
-# ~/.hermes/config.yaml
+# $HERMES_HOME/config.yaml
 secrets:
   infisical:
     enabled: true
@@ -77,7 +77,7 @@ secrets:
 ```
 
 ```dotenv
-# ~/.hermes/.env — bootstrap credential only
+# Hermes dotenv configuration — bootstrap credential only
 INFISICAL_TOKEN=<machine-identity-access-token>
 ```
 
@@ -101,13 +101,12 @@ systemctl --user restart hermes-gateway
 ## Root-only token file
 
 For a root-run Hermes gateway, a token file keeps the bootstrap credential out
-of `~/.hermes/.env`:
+of the local dotenv configuration:
 
 ```bash
 install -d -m 700 /etc/infisical
 install -o root -g root -m 600 /dev/null /etc/infisical/hermes.token
-printf 'INFISICAL_TOKEN=%s\n' '<machine-identity-token>' \
-  > /etc/infisical/hermes.token
+# Enter the machine-identity token into this root-only file using a trusted editor.
 ```
 
 Configure the source:
@@ -175,7 +174,7 @@ reporting.
 - Do not store Infisical tokens in `config.yaml`, Git, issue reports, or logs.
 - Prefer `token_file` on root-run servers; use mode `0600` and root ownership.
 - Use a pinned plugin commit for production installations.
-- Remove duplicate provider credentials from `~/.hermes/.env` after verifying
+- Remove duplicate provider credentials from the local dotenv configuration after verifying
   the Infisical source works.
 - Rotate the machine identity token in Infisical and update the token file; then
   restart Hermes.
@@ -212,7 +211,7 @@ INFISICAL_DOMAIN="http://192.168.1.112/api" \
 ### Hermes starts but old values remain
 
 Set `override_existing: true`, restart the gateway, and remove old values from
-`~/.hermes/.env` once the source is confirmed. Hermes' source precedence still
+the local dotenv configuration once the source is confirmed. Hermes' source precedence still
 protects bootstrap credentials and resolves conflicts with other secret
 sources.
 
@@ -227,7 +226,7 @@ available.
 The plugin follows Hermes' `SecretSource` contract:
 
 - `fetch()` is synchronous, non-interactive, and never raises.
-- Secret values are returned to Hermes, never written directly to `os.environ`.
+- The fetcher hands its mapping to Hermes' standard loader and does not mutate process state.
 - CLI execution uses Hermes' audited `run_secret_cli()` helper.
 - The source is disabled unless explicitly configured.
 
