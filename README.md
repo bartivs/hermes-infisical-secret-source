@@ -92,6 +92,21 @@ secrets:
     domain: "http://192.168.1.112/api"
 ```
 
+With a Universal Auth machine identity on a self-hosted instance (recommended —
+no CLI needed; works even with the CLI's self-hosted token quirks):
+
+```yaml
+secrets:
+  infisical:
+    enabled: true
+    project_id: "<project-uuid>"
+    environment: prod
+    domain: "https://192.168.1.112/api"
+    client_id: "<machine-identity-client-id>"
+    tls_verify: false   # only if the instance uses a self-signed cert
+```
+The machine identity client secret goes in the dotenv bootstrap: `INFISICAL_TOKEN=<client-secret>`.
+
 Restart Hermes after configuration:
 
 ```bash
@@ -136,6 +151,8 @@ owned by root with mode `0600`.
 | `secret_path` | `/` | Infisical folder path to export. |
 | `domain` | `https://app.infisical.com/api` | Infisical API domain; use `/api` for self-hosted deployments. |
 | `cli_path` | `infisical` | Infisical CLI executable path. |
+| `client_id` | empty | Machine identity client ID for Universal Auth. When set, the plugin exchanges `client_id` + client secret for an access token over the Infisical API and fetches secrets directly — no CLI required. Recommended for self-hosted instances (the CLI's token handling has been unreliable there). The client secret is read from `token_env` / `token_file`. |
+| `tls_verify` | `true` | Verify the Infisical server TLS certificate. Set `false` only for trusted self-hosted instances using a self-signed certificate. |
 | `token_env` | `INFISICAL_TOKEN` | Bootstrap token environment variable. |
 | `token_file` | empty | Optional raw or EnvironmentFile-style token path. |
 | `timeout_seconds` | `120` | Hermes source fetch timeout. |

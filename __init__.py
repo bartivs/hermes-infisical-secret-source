@@ -7,8 +7,13 @@ export from the Infisical CLI.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import ssl
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 from agent.secret_sources.base import (
@@ -21,6 +26,8 @@ from agent.secret_sources.base import (
 )
 
 _ENV_LINE = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_UA_LOGIN_PATH = "/v1/auth/universal-auth/login"
+_SECRETS_PATH = "/v4/secrets"
 
 
 def _unquote(value: str) -> str:
@@ -93,6 +100,18 @@ class InfisicalSource(SecretSource):
                 "default": "https://app.infisical.com/api",
             },
             "cli_path": {"description": "Infisical CLI executable", "default": "infisical"},
+            "client_id": {
+                "description": "Machine identity client ID for Universal Auth (HTTP link). "
+                "When set, the plugin exchanges client_id + client_secret for an access "
+                "token via the Infisical API and fetches secrets directly (no CLI needed). "
+                "The client secret is read from token_env / token_file.",
+                "default": "",
+            },
+            "tls_verify": {
+                "description": "Verify the Infisical server certificate. Set false only for "
+                "trusted self-hosted instances using a self-signed cert.",
+                "default": True,
+            },
             "token_env": {
                 "description": "Environment variable containing the token",
                 "default": "INFISICAL_TOKEN",
@@ -111,6 +130,87 @@ class InfisicalSource(SecretSource):
             return _read_token_file(token_file)
         return os.environ.get(token_env, "").strip() or None
 
+    def _ssl_ctx(self, cfg: dict) -> ssl.SSLContext | None:
+        verify = bool(cfg.get("tls_verify", True))
+        if verify:
+            return None  # urllib default context (system CAs)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    def _http_json(self, domain: str, path: str, method: str, headers: dict,
+                   body: dict | None, timeout: float, cfg: dict) -> dict:
+        url = domain + path
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers = {**headers, "Content-Type": "application/json"}
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
+        ctx = self._ssl_ctx(cfg)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                payload = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                pass
+            return {"_http_status": exc.code, "_http_error": detail}
+        except urllib.error.URLError as exc:
+            return {"_http_status": 0, "_http_error": str(exc.reason)}
+        except Exception as exc:
+            return {"_http_status": 0, "_http_error": str(exc)}
+        try:
+            loaded = json.loads(payload)
+            return loaded if isinstance(loaded, dict) else {"_payload": loaded}
+        except Exception:
+            return {"_http_status": 200, "_http_error": payload[:300]}
+
+    def _ua_access_token(self, domain: str, client_id: str, client_secret: str,
+                         timeout: float, cfg: dict) -> str:
+        resp = self._http_json(
+            domain, _UA_LOGIN_PATH, "POST", {}, 
+            {"clientId": client_id, "clientSecret": client_secret}, timeout, cfg)
+        token = resp.get("accessToken", "")
+        if not token:
+            status = resp.get("_http_status")
+            detail = resp.get("_http_error", "") if status in (0, 401, 403) else str(resp)[:200]
+            raise RuntimeError(f"Universal Auth login failed (http={status}): {detail}")
+        return token
+
+    def _fetch_http(self, cfg: dict, domain: str, project_id: str, environment: str,
+                    secret_path: str, client_id: str, client_secret: str,
+                    timeout: float) -> dict:
+        token = self._ua_access_token(domain, client_id, client_secret, timeout, cfg)
+        query = urllib.parse.urlencode({
+            "environment": environment,
+            "projectId": project_id,
+            "secretPath": secret_path or "/",
+            "expandSecretReferences": "true",
+            "includeImports": "true",
+            "includePersonalOverrides": "true",
+            "recursive": "true",
+        })
+        resp = self._http_json(
+            domain, f"{_SECRETS_PATH}?{query}", "GET",
+            {"Authorization": f"Bearer {token}"}, None, timeout, cfg)
+        if "_http_status" in resp and resp["_http_status"] not in (200, None):
+            raise RuntimeError(
+                f"Infisical secrets API failed (http={resp.get('_http_status')}): "
+                f"{resp.get('_http_error','')}")
+        secrets = resp.get("secrets") or []
+        out = {}
+        for s in secrets:
+            key = s.get("secretKey")
+            val = s.get("secretValue")
+            if val is None:
+                val = s.get("value")
+            if key is not None:
+                out[key] = val or ""
+        return out
+
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
         result = FetchResult()
         cfg = cfg if isinstance(cfg, dict) else {}
@@ -127,6 +227,7 @@ class InfisicalSource(SecretSource):
             domain = str(cfg.get("domain") or "https://app.infisical.com/api").strip().rstrip("/")
             secret_path = str(cfg.get("secret_path") or "/").strip() or "/"
             cli_path = str(cfg.get("cli_path") or "infisical").strip() or "infisical"
+            client_id = str(cfg.get("client_id") or "").strip()
             token = self._token(cfg, token_env)
 
             if not project_id:
@@ -139,6 +240,42 @@ class InfisicalSource(SecretSource):
                     "Infisical environment and domain are required",
                     ErrorKind.NOT_CONFIGURED,
                 )
+
+            try:
+                timeout = float(cfg.get("timeout_seconds", 120))
+            except (TypeError, ValueError):
+                timeout = 120.0
+            if timeout <= 0:
+                timeout = 120.0
+
+            # Universal Auth link path: client_id + client_secret -> access token
+            if client_id:
+                if not token:
+                    return result.fail(
+                        "Infisical client secret is not configured (set token_env or "
+                        "token_file to the machine identity client secret)",
+                        ErrorKind.NOT_CONFIGURED,
+                    )
+                try:
+                    result.secrets = self._fetch_http(
+                        cfg, domain, project_id, environment, secret_path,
+                        client_id, token, timeout)
+                except RuntimeError as exc:
+                    msg = str(exc).lower()
+                    kind = classify_cli_error(
+                        msg,
+                        (
+                            (ErrorKind.AUTH_EXPIRED, ("expired", "token has expired")),
+                            (ErrorKind.AUTH_FAILED, ("unauthorized", "invalid token", "401", "forbidden", "failed")),
+                            (ErrorKind.NETWORK, ("timeout", "connection", "network", "no such host", "tls", "ssl")),
+                        ),
+                    )
+                    return result.fail(str(exc), kind)
+                if not result.secrets:
+                    return result.fail(
+                        "Infisical returned no secrets", ErrorKind.EMPTY_VALUE)
+                return result
+
             if not token:
                 return result.fail(
                     "Infisical machine identity token is not configured",

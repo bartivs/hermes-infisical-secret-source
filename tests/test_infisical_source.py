@@ -108,3 +108,53 @@ def test_cli_failure_never_exposes_stderr_or_secret(monkeypatch, tmp_path):
     assert not result.ok
     assert result.error_kind.value == "auth_failed"
     assert "secret-value" not in (result.error or "")
+
+
+def test_http_path_exchanges_ua_and_returns_secrets(monkeypatch, tmp_path):
+    module = source_module()
+    source = module.InfisicalSource()
+
+    calls = []
+
+    def fake_http_json(domain, path, method, headers, body, timeout, cfg):
+        calls.append((path, method, body))
+        if path == module._UA_LOGIN_PATH:
+            return {"accessToken": "jwt-access-token"}
+        return {
+            "secrets": [
+                {"secretKey": "GITEA_TOKEN", "secretValue": "ghp_secret"},
+                {"secretKey": "EMPTY", "secretValue": ""},
+            ]
+        }
+
+    monkeypatch.setattr(source, "_http_json", fake_http_json)
+    monkeypatch.setenv("INFISICAL_TOKEN", "client-secret-value")
+    result = source.fetch(
+        {
+            "enabled": True,
+            "project_id": "project-123",
+            "environment": "prod",
+            "domain": "http://infisical.example/api",
+            "client_id": "client-456",
+        },
+        tmp_path,
+    )
+
+    assert result.ok
+    assert result.secrets == {"GITEA_TOKEN": "ghp_secret", "EMPTY": ""}
+    # login used the client secret, never a CLI invocation
+    assert calls[0][0] == module._UA_LOGIN_PATH
+    assert calls[0][2] == {"clientId": "client-456", "clientSecret": "client-secret-value"}
+    assert "client-secret-value" not in str(result.error or "")
+
+
+def test_http_path_requires_client_secret(monkeypatch, tmp_path):
+    module = source_module()
+    source = module.InfisicalSource()
+    monkeypatch.setenv("INFISICAL_TOKEN", "")
+    monkeypatch.delenv("INFISICAL_TOKEN", raising=False)
+    result = source.fetch(
+        {"enabled": True, "project_id": "p", "client_id": "c"}, tmp_path
+    )
+    assert not result.ok
+    assert result.error_kind.value == "not_configured"
