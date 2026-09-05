@@ -1,0 +1,29 @@
+name: Test Infisical secret source
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test tools
+        run: python -m pip install --upgrade pytest ruff pyyaml
+      - name: Fetch Hermes Agent API
+        run: git clone --depth 1 https://github.com/NousResearch/hermes-agent.git "$RUNNER_TEMP/hermes-agent"
+      - name: Lint
+        run: ruff check .
+      - name: Validate manifest and Python syntax
+        run: python -c "import pathlib, yaml; yaml.safe_load(pathlib.Path('plugin.yaml').read_text())"
+      - name: Run tests
+        env:
+          PYTHONPATH: ${{ runner.temp }}/hermes-agent
+        run: python -m pytest

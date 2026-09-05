@@ -1,0 +1,19 @@
+name: hermes-infisical
+kind: standalone
+version: 0.1.0
+description: >
+  Infisical secret manager integration for Hermes Agent. Loads environment
+  variables from a scoped Infisical machine identity at startup using the
+  official Infisical CLI, with token-file support and Hermes secret-source
+  precedence, provenance, timeout, and fail-open handling.
+author: Barti Valdez
+homepage: https://github.com/bartivs/hermes-infisical-secret-source
+keywords:
+  - hermes-agent
+  - infisical
+  - secret-manager
+  - secrets-management
+  - machine-identity
+  - api-keys
+  - self-hosted
+  - ai-agents
