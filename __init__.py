@@ -266,8 +266,27 @@ class InfisicalSource(SecretSource):
                         msg,
                         (
                             (ErrorKind.AUTH_EXPIRED, ("expired", "token has expired")),
-                            (ErrorKind.AUTH_FAILED, ("unauthorized", "invalid token", "401", "forbidden", "failed")),
-                            (ErrorKind.NETWORK, ("timeout", "connection", "network", "no such host", "tls", "ssl")),
+                            (
+                                ErrorKind.AUTH_FAILED,
+                                (
+                                    "unauthorized",
+                                    "invalid token",
+                                    "401",
+                                    "forbidden",
+                                    "failed",
+                                ),
+                            ),
+                            (
+                                ErrorKind.NETWORK,
+                                (
+                                    "timeout",
+                                    "connection",
+                                    "network",
+                                    "no such host",
+                                    "tls",
+                                    "ssl",
+                                ),
+                            ),
                         ),
                     )
                     return result.fail(str(exc), kind)
